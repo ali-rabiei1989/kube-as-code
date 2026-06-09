@@ -1,0 +1,9 @@
+.DS_Store
+.vagrant/
+*.retry
+.ansible/
+admin.conf
+*.kubeconfig
+*.key
+*.pem
+.env
