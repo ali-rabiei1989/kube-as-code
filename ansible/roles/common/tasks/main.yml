@@ -1,0 +1,112 @@
+---
+- name: Set system hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Update apt package cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install common system packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - software-properties-common
+      - vim
+      - git
+      - jq
+      - net-tools
+      - iproute2
+      - iputils-ping
+      - dnsutils
+      - telnet
+      - tcpdump
+      - socat
+      - conntrack
+      - ebtables
+      - ethtool
+      - chrony
+      - kmod
+    state: present
+
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  when: ansible_swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Disable swap permanently in /etc/fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+- name: Persist Kubernetes kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+
+- name: Load overlay kernel module
+  ansible.builtin.command: modprobe overlay
+  changed_when: false
+
+- name: Load br_netfilter kernel module
+  ansible.builtin.command: modprobe br_netfilter
+  changed_when: false
+
+- name: Persist Kubernetes sysctl settings
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward = 1
+
+- name: Apply Kubernetes sysctl settings
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+- name: Enable and start chrony
+  ansible.builtin.service:
+    name: chrony
+    enabled: true
+    state: started
+
+- name: Configure /etc/hosts for Kubernetes lab
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED KUBERNETES LAB HOSTS"
+    block: |
+      {{ kubernetes_api_vip }} k8s-api.local k8s-api
+      {% for host in groups['kube_cluster'] %}
+      {{ hostvars[host].mgmt_ip }} {{ host }}
+      {{ hostvars[host].workload_ip }} {{ host }}-workload
+      {% endfor %}
+
+- name: Verify mgmt_ip exists on the node
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - mgmt_ip in ansible_all_ipv4_addresses
+    fail_msg: "mgmt_ip {{ mgmt_ip }} is not configured on {{ inventory_hostname }}"
+    success_msg: "mgmt_ip {{ mgmt_ip }} exists on {{ inventory_hostname }}"
+
+- name: Verify workload_ip exists on the node
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - workload_ip in ansible_all_ipv4_addresses
+    fail_msg: "workload_ip {{ workload_ip }} is not configured on {{ inventory_hostname }}"
+    success_msg: "workload_ip {{ workload_ip }} exists on {{ inventory_hostname }}"

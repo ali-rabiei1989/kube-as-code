@@ -1,0 +1,135 @@
+---
+- name: Ensure this role runs only on the first master
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == groups['kube_masters'][0]
+    fail_msg: "prometheus_adapter must run only on the first Kubernetes master."
+    quiet: true
+
+- name: Check Kubernetes API availability
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
+  register: prometheus_adapter_api_check
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: prometheus_adapter_api_check.rc == 0
+
+- name: Add Prometheus Community Helm repository
+  ansible.builtin.command: >
+    helm repo add {{ prometheus_adapter_helm_repo_name }} {{ prometheus_adapter_helm_repo_url }}
+  register: prometheus_adapter_repo_add
+  changed_when: "'has been added' in prometheus_adapter_repo_add.stdout"
+  failed_when:
+    - prometheus_adapter_repo_add.rc != 0
+    - "'already exists' not in prometheus_adapter_repo_add.stderr"
+
+- name: Update Prometheus Community Helm repository
+  ansible.builtin.command: helm repo update {{ prometheus_adapter_helm_repo_name }}
+  register: prometheus_adapter_repo_update
+  changed_when: false
+  retries: 5
+  delay: 30
+  until: prometheus_adapter_repo_update.rc == 0
+
+- name: Ensure Prometheus Adapter chart cache directory exists
+  ansible.builtin.file:
+    path: "{{ prometheus_adapter_chart_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pull Prometheus Adapter Helm chart package
+  ansible.builtin.command: >
+    helm pull {{ prometheus_adapter_chart_name }}
+    --version {{ prometheus_adapter_chart_version }}
+    --destination {{ prometheus_adapter_chart_cache_dir }}
+  register: prometheus_adapter_chart_pull
+  changed_when: false
+  retries: 5
+  delay: 30
+  until: prometheus_adapter_chart_pull.rc == 0
+
+- name: Verify Prometheus Adapter chart package exists
+  ansible.builtin.stat:
+    path: "{{ prometheus_adapter_chart_package }}"
+  register: prometheus_adapter_chart_package_stat
+
+- name: Assert Prometheus Adapter chart package exists
+  ansible.builtin.assert:
+    that:
+      - prometheus_adapter_chart_package_stat.stat.exists
+    fail_msg: "Prometheus Adapter chart package was not found at {{ prometheus_adapter_chart_package }}."
+    quiet: true
+
+- name: Ensure Prometheus Adapter values directory exists
+  ansible.builtin.file:
+    path: /opt/kubernetes/helm-values/prometheus-adapter
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render Prometheus Adapter Helm values
+  ansible.builtin.template:
+    src: prometheus-adapter-values.yaml.j2
+    dest: /opt/kubernetes/helm-values/prometheus-adapter/values.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install or upgrade Prometheus Adapter
+  ansible.builtin.command: >
+    helm upgrade --install {{ prometheus_adapter_release_name }} {{ prometheus_adapter_chart_package }}
+    --namespace {{ prometheus_adapter_namespace }}
+    --values /opt/kubernetes/helm-values/prometheus-adapter/values.yaml
+    --kubeconfig /etc/kubernetes/admin.conf
+    --wait
+    --timeout 600s
+  register: prometheus_adapter_helm_result
+  changed_when: >
+    'has been installed' in prometheus_adapter_helm_result.stdout or
+    'has been upgraded' in prometheus_adapter_helm_result.stdout
+
+- name: Wait for Prometheus Adapter rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ prometheus_adapter_namespace }}
+    rollout status deployment/{{ prometheus_adapter_release_name }}
+    --timeout=600s
+  changed_when: false
+
+- name: Wait for Custom Metrics APIService
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get apiservice v1beta1.custom.metrics.k8s.io
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+  register: custom_metrics_api_available
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: custom_metrics_api_available.stdout == "True"
+
+- name: Verify custom metrics API lists nginx metric
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get --raw /apis/custom.metrics.k8s.io/v1beta1
+  register: custom_metrics_api_list
+  changed_when: false
+  retries: 20
+  delay: 10
+  until:
+    - custom_metrics_api_list.rc == 0
+    - prometheus_adapter_nginx_metric_name in custom_metrics_api_list.stdout
+
+- name: Verify nginx request rate metric for sample app Service
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get --raw /apis/custom.metrics.k8s.io/v1beta1/namespaces/{{ sample_app_namespace }}/services/{{ sample_app_service_name }}/{{ prometheus_adapter_nginx_metric_name }}
+  register: nginx_custom_metric_value
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - nginx_custom_metric_value.rc == 0
+    - '"items" in nginx_custom_metric_value.stdout'

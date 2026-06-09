@@ -1,0 +1,137 @@
+---
+- name: Ensure this role runs only on the first master
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - inventory_hostname == groups['kube_masters'][0]
+    fail_msg: "The metrics_server role must run only on the first Kubernetes master."
+    success_msg: "Installing Metrics Server from the first Kubernetes master."
+
+- name: Check Kubernetes API availability
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get nodes
+  register: metrics_server_kubectl_get_nodes
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: metrics_server_kubectl_get_nodes.rc == 0
+
+- name: Add Metrics Server Helm repository
+  ansible.builtin.command: >
+    helm repo add {{ metrics_server_helm_repo_name }} {{ metrics_server_helm_repo_url }}
+  register: metrics_server_repo_add
+  changed_when: "'has been added' in metrics_server_repo_add.stdout"
+  failed_when:
+    - metrics_server_repo_add.rc != 0
+    - "'already exists' not in metrics_server_repo_add.stderr"
+
+- name: Update Metrics Server Helm repository
+  ansible.builtin.command: >
+    helm repo update {{ metrics_server_helm_repo_name }}
+  register: metrics_server_repo_update
+  changed_when: false
+  retries: 5
+  delay: 30
+  until: metrics_server_repo_update.rc == 0
+
+- name: Ensure Metrics Server chart cache directory exists
+  ansible.builtin.file:
+    path: "{{ metrics_server_chart_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pull Metrics Server Helm chart package
+  ansible.builtin.command: >
+    helm pull {{ metrics_server_chart_name }}
+    --version {{ metrics_server_chart_version }}
+    --destination {{ metrics_server_chart_cache_dir }}
+  register: metrics_server_chart_pull
+  changed_when: false
+  retries: 5
+  delay: 30
+  until: metrics_server_chart_pull.rc == 0
+
+- name: Verify Metrics Server chart package exists
+  ansible.builtin.stat:
+    path: "{{ metrics_server_chart_package }}"
+  register: metrics_server_chart_package_stat
+
+- name: Assert Metrics Server chart package exists
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - metrics_server_chart_package_stat.stat.exists
+    fail_msg: "Metrics Server chart package was not found at {{ metrics_server_chart_package }}"
+    success_msg: "Metrics Server chart package exists at {{ metrics_server_chart_package }}"
+
+- name: Ensure Metrics Server values directory exists
+  ansible.builtin.file:
+    path: /opt/kubernetes/helm-values/metrics-server
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render Metrics Server Helm values
+  ansible.builtin.template:
+    src: metrics-server-values.yaml.j2
+    dest: /opt/kubernetes/helm-values/metrics-server/values.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install or upgrade Metrics Server with local Helm chart package
+  ansible.builtin.command: >
+    helm upgrade --install {{ metrics_server_release_name }} {{ metrics_server_chart_package }}
+    --namespace {{ metrics_server_namespace }}
+    --values /opt/kubernetes/helm-values/metrics-server/values.yaml
+    --kubeconfig /etc/kubernetes/admin.conf
+    --wait
+    --timeout 600s
+  register: metrics_server_helm_result
+  changed_when: >
+    'has been installed' in metrics_server_helm_result.stdout or
+    'has been upgraded' in metrics_server_helm_result.stdout
+
+- name: Wait for Metrics Server deployment rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ metrics_server_namespace }}
+    rollout status deployment/{{ metrics_server_release_name }}
+    --timeout=600s
+  changed_when: false
+
+- name: Wait for Metrics APIService to become available
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get apiservice v1beta1.metrics.k8s.io
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+  register: metrics_api_available
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: metrics_api_available.stdout == "True"
+
+- name: Wait until kubectl top nodes returns metrics
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    top nodes
+  register: kubectl_top_nodes
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: kubectl_top_nodes.rc == 0
+
+- name: Wait until kubectl top pods returns metrics
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    top pods -A
+  register: kubectl_top_pods
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: kubectl_top_pods.rc == 0
+

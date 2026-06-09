@@ -1,0 +1,80 @@
+---
+- name: Install containerd package
+  ansible.builtin.apt:
+    name:
+      - containerd
+    state: present
+    update_cache: true
+
+- name: Ensure containerd config directory exists
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Generate default containerd config if missing
+  ansible.builtin.command: containerd config default
+  register: containerd_default_config
+  changed_when: false
+  check_mode: false
+
+- name: Write initial containerd config
+  ansible.builtin.copy:
+    dest: /etc/containerd/config.toml
+    content: "{{ containerd_default_config.stdout }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+  notify: Restart containerd
+
+- name: Ensure CRI plugin is not disabled
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: '^disabled_plugins\s*=\s*\["cri"\]'
+    replace: 'disabled_plugins = []'
+  notify: Restart containerd
+
+- name: Enable systemd cgroup driver for containerd 1.x config
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: '^\s*SystemdCgroup\s*=\s*false'
+    replace: '            SystemdCgroup = true'
+  notify: Restart containerd
+
+- name: Set Kubernetes sandbox image
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: '^\s*sandbox_image\s*=\s*".*"'
+    replace: '    sandbox_image = "registry.k8s.io/pause:3.10"'
+  notify: Restart containerd
+
+- name: Flush handlers before enabling containerd
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start containerd
+  ansible.builtin.service:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: Verify containerd service is active
+  ansible.builtin.command: systemctl is-active containerd
+  register: containerd_service_status
+  changed_when: false
+  failed_when: containerd_service_status.stdout != "active"
+
+- name: Verify CRI socket exists
+  ansible.builtin.stat:
+    path: /run/containerd/containerd.sock
+  register: containerd_socket
+
+- name: Assert containerd CRI socket exists
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - containerd_socket.stat.exists
+    fail_msg: "containerd socket /run/containerd/containerd.sock does not exist"
+    success_msg: "containerd socket exists"

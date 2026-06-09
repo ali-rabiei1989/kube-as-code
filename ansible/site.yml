@@ -1,0 +1,162 @@
+---
+- name: Prepare Kubernetes nodes
+  hosts: kube_cluster
+  become: true
+  gather_facts: true
+  tags: [common, os_prepare, containerd, kubernetes]
+  roles:
+    - common
+    - containerd
+    - kubernetes
+    - kubernetes_images
+
+- name: Configure Kubernetes API high availability
+  hosts: kube_masters
+  become: true
+  gather_facts: true
+  tags: [ha, haproxy, keepalived]
+  roles:
+    - haproxy_keepalived
+
+- name: Bootstrap Kubernetes control plane
+  hosts: kube_masters
+  become: true
+  gather_facts: true
+  tags: [control_plane, kubeadm, kubeadm_init]
+  roles:
+    - control_plane
+
+- name: Join Kubernetes worker nodes
+  hosts: kube_workers
+  become: true
+  gather_facts: true
+  tags: [worker, join, kubeadm_join]
+  roles:
+    - worker
+
+- name: Install Calico CNI
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags: [cni, calico]
+  roles:
+    - calico
+
+- name: Install Helm
+  hosts: kube_masters
+  become: true
+  gather_facts: true
+  tags: [helm]
+  roles:
+    - helm
+
+- name: Pre-pull MetalLB images
+  hosts: kube_cluster
+  become: true
+  gather_facts: false
+  tags: [metallb, images]
+  vars:
+    image_pull_images: "{{ metallb_images }}"
+  roles:
+    - image_pull
+
+- name: Install MetalLB
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags: [metallb, loadbalancer]
+  roles:
+    - metallb
+
+- name: Pre-pull Metrics Server image
+  hosts: kube_cluster
+  become: true
+  gather_facts: false
+  tags: [metrics_server, images]
+  vars:
+    image_pull_images:
+      - "{{ metrics_server_image }}"
+  roles:
+    - image_pull
+
+- name: Install Metrics Server
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags: [metrics_server, metrics]
+  roles:
+    - metrics_server
+
+- name: Pre-pull sample application images
+  hosts: kube_cluster
+  become: true
+  gather_facts: false
+  tags: [sample_app, images]
+  vars:
+    image_pull_images: "{{ sample_app_images }}"
+  roles:
+    - image_pull
+
+- name: Deploy and verify sample application
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags: [sample_app, application, app]
+  roles:
+    - sample_app
+
+- name: Pre-pull Prometheus images
+  hosts: kube_cluster
+  become: true
+  gather_facts: false
+  tags: [prometheus, images]
+  vars:
+    image_pull_images: "{{ prometheus_images }}"
+  roles:
+    - image_pull
+
+- name: Install and verify Prometheus
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags: [prometheus, monitoring]
+  roles:
+    - prometheus
+
+- name: Pre-pull Prometheus Adapter image
+  hosts: kube_cluster
+  become: true
+  gather_facts: false
+  tags: [prometheus_adapter, custom_metrics, hpa, images]
+  vars:
+    image_pull_images:
+      - "{{ prometheus_adapter_image }}"
+  roles:
+    - image_pull
+
+- name: Install and verify Prometheus Adapter
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags: [prometheus_adapter, custom_metrics, hpa]
+  roles:
+    - prometheus_adapter
+
+- name: Create limited application viewer user
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags: [rbac, security, app_viewer_user]
+  roles:
+    - kubernetes_user
+
+- name: Configure HPA for sample application
+  hosts: "{{ groups['kube_masters'][0] }}"
+  become: true
+  gather_facts: true
+  tags:
+    - hpa
+    - custom_metrics
+
+  roles:
+    - hpa

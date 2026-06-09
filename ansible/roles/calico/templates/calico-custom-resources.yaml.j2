@@ -1,0 +1,32 @@
+---
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  # Empty value means a standard kubeadm/on-prem Kubernetes cluster.
+  kubernetesProvider: ""
+
+  calicoNetwork:
+    # BGP is disabled for this Vagrant lab.
+    # VXLAN is easier and safer for virtualized multi-node labs.
+    bgp: {{ calico_bgp }}
+
+    # Force Calico to use the workload/data-plane network.
+    # Without this, Calico may pick the libvirt NAT interface or the mgmt interface.
+    nodeAddressAutodetectionV4:
+      cidrs:
+        - "{{ calico_ip_autodetection_cidr }}"
+
+    ipPools:
+      - cidr: "{{ pod_network_cidr }}"
+        encapsulation: {{ calico_encapsulation }}
+        natOutgoing: {{ calico_nat_outgoing }}
+        nodeSelector: all()
+
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}

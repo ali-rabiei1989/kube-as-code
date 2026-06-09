@@ -1,0 +1,129 @@
+---
+- name: Set first master fact
+  ansible.builtin.set_fact:
+    first_master: "{{ groups['kube_masters'][0] }}"
+
+- name: Check if this master is already initialized or joined
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Check if admin.conf exists on this master
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf
+
+- name: Build API server certificate SAN list
+  ansible.builtin.set_fact:
+    apiserver_cert_sans: >-
+      {{ kubernetes_api_vip }},k8s-api.local,k8s-api,{% for host in groups['kube_masters'] %}{{ hostvars[host].mgmt_ip }}{% if not loop.last %},{% endif %}{% endfor %}
+
+- name: Initialize the first Kubernetes master
+  ansible.builtin.command: >
+    kubeadm init
+    --kubernetes-version {{ kubernetes_version }}
+    --control-plane-endpoint {{ kubernetes_api_endpoint }}
+    --apiserver-advertise-address {{ mgmt_ip }}
+    --apiserver-bind-port {{ kubernetes_api_server_port }}
+    --pod-network-cidr {{ pod_network_cidr }}
+    --service-cidr {{ service_cidr }}
+    --cri-socket {{ kubernetes_cri_socket }}
+    --upload-certs
+    --apiserver-cert-extra-sans {{ apiserver_cert_sans }}
+  when:
+    - inventory_hostname == first_master
+    - not admin_conf.stat.exists
+  register: kubeadm_init_result
+
+- name: Wait for admin.conf on first master
+  ansible.builtin.wait_for:
+    path: /etc/kubernetes/admin.conf
+    timeout: 120
+  when: inventory_hostname == first_master
+
+- name: Wait for kube-apiserver to become reachable on first master
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/readyz
+  register: apiserver_readyz
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: apiserver_readyz.rc == 0
+  when: inventory_hostname == first_master
+
+- name: Generate worker join command on first master
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: worker_join_command_result
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['kube_masters'][0] }}"
+
+- name: Check if super-admin kubeconfig exists on first master
+  ansible.builtin.stat:
+    path: /etc/kubernetes/super-admin.conf
+  register: super_admin_conf
+  run_once: true
+  delegate_to: "{{ groups['kube_masters'][0] }}"
+
+- name: Assert super-admin kubeconfig exists
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - super_admin_conf.stat.exists
+    fail_msg: "/etc/kubernetes/super-admin.conf does not exist on the first master"
+    success_msg: "super-admin.conf exists on the first master"
+  run_once: true
+
+- name: Upload certificates and get certificate key from first master
+  ansible.builtin.command: >
+    kubeadm init phase upload-certs
+    --upload-certs
+    --kubeconfig /etc/kubernetes/super-admin.conf
+  register: upload_certs_result
+  changed_when: false
+  retries: 5
+  delay: 15
+  until: upload_certs_result.rc == 0
+  run_once: true
+  delegate_to: "{{ groups['kube_masters'][0] }}"
+
+- name: Store join data as facts for this play
+  ansible.builtin.set_fact:
+    worker_join_command: "{{ worker_join_command_result.stdout }}"
+    control_plane_certificate_key: "{{ upload_certs_result.stdout_lines[-1] }}"
+
+- name: Join additional Kubernetes masters
+  ansible.builtin.command: >
+    {{ worker_join_command }}
+    --control-plane
+    --certificate-key {{ control_plane_certificate_key }}
+    --apiserver-advertise-address {{ mgmt_ip }}
+    --cri-socket {{ kubernetes_cri_socket }}
+  when:
+    - inventory_hostname != first_master
+    - not kubelet_conf.stat.exists
+
+- name: Re-check admin.conf after possible join
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf_after_join
+
+- name: Create kubeconfig directory for vagrant user on masters
+  ansible.builtin.file:
+    path: /home/vagrant/.kube
+    state: directory
+    owner: vagrant
+    group: vagrant
+    mode: "0755"
+  when: admin_conf_after_join.stat.exists
+
+- name: Copy admin kubeconfig for vagrant user on masters
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/vagrant/.kube/config
+    remote_src: true
+    owner: vagrant
+    group: vagrant
+    mode: "0600"
+  when: admin_conf_after_join.stat.exists
+

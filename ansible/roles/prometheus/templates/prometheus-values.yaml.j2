@@ -1,0 +1,46 @@
+alertmanager:
+  enabled: false
+
+kube-state-metrics:
+  enabled: false
+
+prometheus-node-exporter:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  global:
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    evaluation_interval: 15s
+
+  persistentVolume:
+    enabled: false
+
+  retention: "2h"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    servicePort: 80
+
+serverFiles:
+  prometheus.yml:
+    scrape_configs:
+      - job_name: {{ prometheus_sample_app_job_name }}
+        metrics_path: {{ prometheus_sample_app_metrics_path }}
+        static_configs:
+          - targets:
+              - {{ prometheus_sample_app_target }}
+            labels:
+              namespace: {{ sample_app_namespace }}
+              service: {{ sample_app_service_name }}

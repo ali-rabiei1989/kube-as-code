@@ -1,0 +1,178 @@
+---
+- name: Detect management interface name
+  ansible.builtin.shell: |
+    ip -o -4 addr show | awk '$4 ~ /^{{ mgmt_ip }}\// {print $2}'
+  register: mgmt_interface_result
+  changed_when: false
+
+- name: Set management interface fact
+  ansible.builtin.set_fact:
+    mgmt_interface: "{{ mgmt_interface_result.stdout | trim }}"
+
+- name: Assert management interface was detected
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - mgmt_interface | length > 0
+    fail_msg: "Could not detect management interface for {{ mgmt_ip }} on {{ inventory_hostname }}"
+    success_msg: "Management interface for {{ mgmt_ip }} on {{ inventory_hostname }} is {{ mgmt_interface }}"
+
+- name: Install HAProxy and Keepalived
+  ansible.builtin.apt:
+    name:
+      - haproxy
+      - keepalived
+      - procps
+    state: present
+    update_cache: true
+
+- name: Allow services to bind to non-local IP addresses
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/98-kubernetes-ha.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      net.ipv4.ip_nonlocal_bind = 1
+
+- name: Apply HA sysctl settings
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+- name: Configure HAProxy for Kubernetes API load balancing
+  ansible.builtin.copy:
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      global
+          log /dev/log local0
+          log /dev/log local1 notice
+          chroot /var/lib/haproxy
+          stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+          stats timeout 30s
+          user haproxy
+          group haproxy
+          daemon
+
+      defaults
+          log global
+          mode tcp
+          option tcplog
+          option dontlognull
+          timeout connect 5s
+          timeout client  50s
+          timeout server  50s
+
+      frontend kubernetes_api_frontend
+          bind {{ kubernetes_api_vip }}:{{ kubernetes_api_lb_port }}
+          mode tcp
+          option tcplog
+          default_backend kubernetes_api_backend
+
+      backend kubernetes_api_backend
+          mode tcp
+          option tcp-check
+          balance roundrobin
+      {% for host in groups['kube_masters'] %}
+          server {{ host }} {{ hostvars[host].mgmt_ip }}:{{ kubernetes_api_server_port }} check fall 3 rise 2
+      {% endfor %}
+
+      listen stats
+          bind *:{{ haproxy_stats_port }}
+          mode http
+          stats enable
+          stats uri /
+          stats refresh 10s
+  notify: Restart haproxy
+
+- name: Configure Keepalived for Kubernetes API VIP
+  ansible.builtin.copy:
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      global_defs {
+          router_id {{ inventory_hostname }}
+          enable_script_security
+          script_user root
+      }
+
+      vrrp_script chk_haproxy {
+          script "/bin/systemctl is-active --quiet haproxy"
+          interval 2
+          weight -30
+          fall 2
+          rise 2
+      }
+
+      vrrp_instance VI_K8S_API {
+          state {{ keepalived_state }}
+          interface {{ mgmt_interface }}
+          virtual_router_id {{ keepalived_virtual_router_id }}
+          priority {{ keepalived_priority }}
+          advert_int 1
+
+          authentication {
+              auth_type PASS
+              auth_pass {{ keepalived_auth_pass }}
+          }
+
+          unicast_src_ip {{ mgmt_ip }}
+          unicast_peer {
+      {% for host in groups['kube_masters'] if host != inventory_hostname %}
+              {{ hostvars[host].mgmt_ip }}
+      {% endfor %}
+          }
+
+          virtual_ipaddress {
+              {{ kubernetes_api_vip }}/24 dev {{ mgmt_interface }}
+          }
+
+          track_script {
+              chk_haproxy
+          }
+      }
+  notify: Restart keepalived
+
+- name: Flush handlers before service verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start HAProxy
+  ansible.builtin.service:
+    name: haproxy
+    enabled: true
+    state: started
+
+- name: Enable and start Keepalived
+  ansible.builtin.service:
+    name: keepalived
+    enabled: true
+    state: started
+
+- name: Verify HAProxy is active
+  ansible.builtin.command: systemctl is-active haproxy
+  register: haproxy_status
+  changed_when: false
+  failed_when: haproxy_status.stdout != "active"
+
+- name: Verify Keepalived is active
+  ansible.builtin.command: systemctl is-active keepalived
+  register: keepalived_status
+  changed_when: false
+  failed_when: keepalived_status.stdout != "active"
+
+- name: Check listening TCP sockets
+  ansible.builtin.command: ss -lnt
+  register: ss_output
+  changed_when: false
+
+- name: Confirm HAProxy listens on Kubernetes API LB port
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "':' ~ kubernetes_api_lb_port|string in ss_output.stdout"
+    fail_msg: "HAProxy does not appear to be listening on port {{ kubernetes_api_lb_port }}"
+    success_msg: "HAProxy is listening on port {{ kubernetes_api_lb_port }}"

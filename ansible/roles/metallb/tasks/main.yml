@@ -1,0 +1,109 @@
+---
+- name: Ensure this role runs only on the first master
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - inventory_hostname == groups['kube_masters'][0]
+    fail_msg: "The metallb role must run only on the first Kubernetes master."
+    success_msg: "Installing MetalLB from the first Kubernetes master."
+
+- name: Check Kubernetes API availability
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get nodes
+  register: metallb_kubectl_get_nodes
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: metallb_kubectl_get_nodes.rc == 0
+
+- name: Add MetalLB Helm repository
+  ansible.builtin.command: >
+    helm repo add {{ metallb_helm_repo_name }} {{ metallb_helm_repo_url }}
+  register: metallb_repo_add
+  changed_when: "'has been added' in metallb_repo_add.stdout"
+  failed_when:
+    - metallb_repo_add.rc != 0
+    - "'already exists' not in metallb_repo_add.stderr"
+
+- name: Update Helm repositories
+  ansible.builtin.command: helm repo update {{ metallb_helm_repo_name }}
+  changed_when: false
+
+- name: Install or upgrade MetalLB with Helm
+  ansible.builtin.command: >
+    helm upgrade --install {{ metallb_release_name }} {{ metallb_helm_repo_name }}/metallb
+    --namespace {{ metallb_namespace }}
+    --create-namespace
+    --version {{ metallb_chart_version }}
+    --set controller.image.tag={{ metallb_image_tag }}
+    --set speaker.image.tag={{ metallb_image_tag }}
+    --kubeconfig /etc/kubernetes/admin.conf
+    --wait
+    --timeout 600s
+  register: metallb_helm_install
+  changed_when: >
+    'has been installed' in metallb_helm_install.stdout or
+    'has been upgraded' in metallb_helm_install.stdout
+
+- name: Wait for MetalLB IPAddressPool CRD
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get crd ipaddresspools.metallb.io
+  register: metallb_ipaddresspool_crd
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: metallb_ipaddresspool_crd.rc == 0
+
+- name: Wait for MetalLB L2Advertisement CRD
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get crd l2advertisements.metallb.io
+  register: metallb_l2advertisement_crd
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: metallb_l2advertisement_crd.rc == 0
+
+- name: Ensure MetalLB manifest directory exists
+  ansible.builtin.file:
+    path: /opt/kubernetes/manifests/metallb
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render MetalLB IPAddressPool and L2Advertisement
+  ansible.builtin.template:
+    src: metallb-config.yaml.j2
+    dest: /opt/kubernetes/manifests/metallb/metallb-config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply MetalLB Layer2 configuration
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    apply -f /opt/kubernetes/manifests/metallb/metallb-config.yaml
+  register: metallb_config_apply
+  changed_when: >
+    'created' in metallb_config_apply.stdout or
+    'configured' in metallb_config_apply.stdout
+
+- name: Wait for MetalLB controller deployment
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ metallb_namespace }}
+    rollout status deployment/{{ metallb_release_name }}-controller
+    --timeout=600s
+  changed_when: false
+
+- name: Wait for MetalLB speaker daemonset
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ metallb_namespace }}
+    rollout status daemonset/{{ metallb_release_name }}-speaker
+    --timeout=600s
+  changed_when: false
+

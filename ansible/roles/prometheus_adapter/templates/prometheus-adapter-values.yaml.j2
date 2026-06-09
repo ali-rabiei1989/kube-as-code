@@ -1,0 +1,41 @@
+image:
+  repository: {{ prometheus_adapter_image_repository }}
+  tag: {{ prometheus_adapter_image_tag }}
+  pullPolicy: IfNotPresent
+
+prometheus:
+  url: {{ prometheus_adapter_prometheus_url }}
+  port: {{ prometheus_adapter_prometheus_port }}
+  path: ""
+
+replicas: 1
+
+metricsRelistInterval: 30s
+
+extraArguments:
+  - --metrics-max-age=2m
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+rules:
+  default: false
+  custom:
+    - seriesQuery: 'nginx_http_requests_total{namespace!="",service!=""}'
+      resources:
+        overrides:
+          namespace:
+            resource: namespace
+          service:
+            resource: service
+      name:
+        matches: "^nginx_http_requests_total$"
+        as: "{{ prometheus_adapter_nginx_metric_name }}"
+      metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+
+logLevel: 4

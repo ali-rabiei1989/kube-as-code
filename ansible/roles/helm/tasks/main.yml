@@ -1,0 +1,50 @@
+---
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Helm apt repository key
+  ansible.builtin.get_url:
+    url: https://packages.buildkite.com/helm-linux/helm-debian/gpgkey
+    dest: /tmp/helm.gpgkey
+    mode: "0644"
+
+- name: Convert Helm repository key to keyring
+  ansible.builtin.command:
+    cmd: gpg --dearmor -o /etc/apt/keyrings/helm.gpg /tmp/helm.gpgkey
+    creates: /etc/apt/keyrings/helm.gpg
+
+- name: Set Helm keyring permissions
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/helm.gpg
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure Helm apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/helm-stable-debian.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      deb [signed-by=/etc/apt/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main
+
+- name: Update apt cache after adding Helm repository
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Install Helm
+  ansible.builtin.apt:
+    name: helm
+    state: present
+
+- name: Check Helm version
+  ansible.builtin.command: helm version
+  register: helm_version_output
+  changed_when: false
+

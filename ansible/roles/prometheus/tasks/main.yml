@@ -1,0 +1,148 @@
+---
+- name: Ensure this role runs only on the first master
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == groups['kube_masters'][0]
+    fail_msg: "prometheus must run only on the first Kubernetes master."
+    quiet: true
+
+- name: Check Kubernetes API availability
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
+  register: prometheus_api_check
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: prometheus_api_check.rc == 0
+
+- name: Add Prometheus Community Helm repository
+  ansible.builtin.command: >
+    helm repo add {{ prometheus_helm_repo_name }} {{ prometheus_helm_repo_url }}
+  register: prometheus_repo_add
+  changed_when: "'has been added' in prometheus_repo_add.stdout"
+  failed_when:
+    - prometheus_repo_add.rc != 0
+    - "'already exists' not in prometheus_repo_add.stderr"
+
+- name: Update Prometheus Community Helm repository
+  ansible.builtin.command: helm repo update {{ prometheus_helm_repo_name }}
+  register: prometheus_repo_update
+  changed_when: false
+  retries: 5
+  delay: 30
+  until: prometheus_repo_update.rc == 0
+
+- name: Ensure Prometheus chart cache directory exists
+  ansible.builtin.file:
+    path: "{{ prometheus_chart_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pull Prometheus Helm chart package
+  ansible.builtin.command: >
+    helm pull {{ prometheus_chart_name }}
+    --version {{ prometheus_chart_version }}
+    --destination {{ prometheus_chart_cache_dir }}
+  register: prometheus_chart_pull
+  changed_when: false
+  retries: 5
+  delay: 30
+  until: prometheus_chart_pull.rc == 0
+
+- name: Verify Prometheus chart package exists
+  ansible.builtin.stat:
+    path: "{{ prometheus_chart_package }}"
+  register: prometheus_chart_package_stat
+
+- name: Assert Prometheus chart package exists
+  ansible.builtin.assert:
+    that:
+      - prometheus_chart_package_stat.stat.exists
+    fail_msg: "Prometheus chart package was not found at {{ prometheus_chart_package }}."
+    quiet: true
+
+- name: Ensure Prometheus values directory exists
+  ansible.builtin.file:
+    path: /opt/kubernetes/helm-values/prometheus
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render Prometheus Helm values
+  ansible.builtin.template:
+    src: prometheus-values.yaml.j2
+    dest: /opt/kubernetes/helm-values/prometheus/values.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install or upgrade Prometheus
+  ansible.builtin.command: >
+    helm upgrade --install {{ prometheus_release_name }} {{ prometheus_chart_package }}
+    --namespace {{ prometheus_namespace }}
+    --create-namespace
+    --values /opt/kubernetes/helm-values/prometheus/values.yaml
+    --kubeconfig /etc/kubernetes/admin.conf
+    --wait
+    --timeout 600s
+  register: prometheus_helm_result
+  changed_when: >
+    'has been installed' in prometheus_helm_result.stdout or
+    'has been upgraded' in prometheus_helm_result.stdout
+
+- name: Wait for Prometheus server rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ prometheus_namespace }}
+    rollout status deployment/{{ prometheus_release_name }}-server
+    --timeout=600s
+  changed_when: false
+
+- name: Read Prometheus service ClusterIP
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ prometheus_namespace }}
+    get svc {{ prometheus_release_name }}-server
+    -o jsonpath='{.spec.clusterIP}'
+  register: prometheus_service_cluster_ip
+  changed_when: false
+
+- name: Verify Prometheus has loaded sample application scrape job
+  ansible.builtin.command: >
+    curl -fsS http://{{ prometheus_service_cluster_ip.stdout }}/api/v1/status/config
+  register: prometheus_active_config
+  changed_when: false
+  retries: 20
+  delay: 10
+  until:
+    - prometheus_active_config.rc == 0
+    - prometheus_sample_app_job_name in prometheus_active_config.stdout
+
+- name: Verify sample application target is up in Prometheus
+  ansible.builtin.command: >
+    curl -fsS
+    "http://{{ prometheus_service_cluster_ip.stdout }}/api/v1/query?query=up%7Bjob%3D%22{{ prometheus_sample_app_job_name }}%22%7D"
+  register: prometheus_sample_app_up_query
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+  - prometheus_sample_app_up_query.rc == 0
+  - "(prometheus_sample_app_up_query.stdout | from_json).status == 'success'"
+  - "((prometheus_sample_app_up_query.stdout | from_json).data.result | length) > 0"
+  - "(((prometheus_sample_app_up_query.stdout | from_json).data.result[0].value[1]) | float) == 1.0"
+
+- name: Verify sample application metric exists in Prometheus
+  ansible.builtin.command: >
+    curl -fsS
+    "http://{{ prometheus_service_cluster_ip.stdout }}/api/v1/query?query={{ prometheus_sample_app_metric_name }}%7Bnamespace%3D%22{{ sample_app_namespace }}%22%2Cservice%3D%22{{ sample_app_service_name }}%22%7D"
+  register: prometheus_sample_metric_query
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - prometheus_sample_metric_query.rc == 0
+    - "(prometheus_sample_metric_query.stdout | from_json).status == 'success'"
+    - "((prometheus_sample_metric_query.stdout | from_json).data.result | length) > 0"

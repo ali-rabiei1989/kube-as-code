@@ -1,0 +1,172 @@
+---
+- name: Ensure this role runs only on the first master
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == groups['kube_masters'][0]
+    fail_msg: "sample_app must run only on the first Kubernetes master."
+    quiet: true
+
+- name: Check Kubernetes API availability
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
+  register: sample_app_api_check
+  changed_when: false
+  retries: 20
+  delay: 5
+  until: sample_app_api_check.rc == 0
+
+- name: Ensure remote Helm chart directory exists
+  ansible.builtin.file:
+    path: "{{ sample_app_chart_remote_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy sample application Helm chart
+  ansible.builtin.copy:
+    src: "{{ sample_app_chart_local_path }}/"
+    dest: "{{ sample_app_chart_remote_path }}/"
+    owner: root
+    group: root
+    mode: preserve
+
+- name: Ensure application manifest directory exists
+  ansible.builtin.file:
+    path: /opt/kubernetes/manifests/sample-app
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy or upgrade sample application
+  ansible.builtin.command: >
+    helm upgrade --install {{ sample_app_release_name }} {{ sample_app_chart_remote_path }}
+    --namespace {{ sample_app_namespace }}
+    --create-namespace
+    --values {{ sample_app_values_file }}
+    --kubeconfig /etc/kubernetes/admin.conf
+    --wait
+    --timeout 600s
+  register: sample_app_helm_result
+  changed_when: >
+    'has been installed' in sample_app_helm_result.stdout or
+    'has been upgraded' in sample_app_helm_result.stdout
+
+- name: Wait for sample application rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ sample_app_namespace }}
+    rollout status deployment/{{ sample_app_deployment_name }}
+    --timeout=600s
+  changed_when: false
+
+- name: Read sample application service type
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ sample_app_namespace }}
+    get svc {{ sample_app_service_name }}
+    -o jsonpath='{.spec.type}'
+  register: sample_app_service_type
+  changed_when: false
+
+- name: Assert sample application service type
+  ansible.builtin.assert:
+    that:
+      - sample_app_service_type.stdout == sample_app_expected_service_type
+    fail_msg: "Service {{ sample_app_service_name }} type is {{ sample_app_service_type.stdout }}, expected {{ sample_app_expected_service_type }}."
+    quiet: true
+
+- name: Wait for MetalLB EXTERNAL-IP
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ sample_app_namespace }}
+    get svc {{ sample_app_service_name }}
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+  register: sample_app_external_ip_result
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: sample_app_external_ip_result.stdout | length > 0
+
+- name: Store sample application EXTERNAL-IP
+  ansible.builtin.set_fact:
+    sample_app_external_ip: "{{ sample_app_external_ip_result.stdout }}"
+
+- name: Verify root endpoint through LoadBalancer
+  ansible.builtin.uri:
+    url: "http://{{ sample_app_external_ip }}{{ sample_app_http_path }}"
+    method: GET
+    status_code: "{{ sample_app_expected_http_status }}"
+    return_content: true
+    timeout: 15
+  register: sample_app_root_response
+  delegate_to: localhost
+  become: false
+
+- name: Assert root endpoint response
+  ansible.builtin.assert:
+    that:
+      - sample_app_expected_response_text in sample_app_root_response.content
+    fail_msg: "Root endpoint did not contain expected text: {{ sample_app_expected_response_text }}."
+    quiet: true
+
+- name: Verify health endpoint through LoadBalancer
+  ansible.builtin.uri:
+    url: "http://{{ sample_app_external_ip }}{{ sample_app_health_path }}"
+    method: GET
+    status_code: 200
+    return_content: true
+    timeout: 15
+  register: sample_app_health_response
+  delegate_to: localhost
+  become: false
+
+- name: Assert health endpoint response
+  ansible.builtin.assert:
+    that:
+      - sample_app_expected_health_text in sample_app_health_response.content
+    fail_msg: "Health endpoint did not contain expected text: {{ sample_app_expected_health_text }}."
+    quiet: true
+
+- name: Verify readiness endpoint through LoadBalancer
+  ansible.builtin.uri:
+    url: "http://{{ sample_app_external_ip }}{{ sample_app_readiness_path }}"
+    method: GET
+    status_code: 200
+    return_content: true
+    timeout: 15
+  register: sample_app_readiness_response
+  delegate_to: localhost
+  become: false
+
+- name: Assert readiness endpoint response
+  ansible.builtin.assert:
+    that:
+      - sample_app_expected_readiness_text in sample_app_readiness_response.content
+    fail_msg: "Readiness endpoint did not contain expected text: {{ sample_app_expected_readiness_text }}."
+    quiet: true
+
+- name: Read sample application metrics service ClusterIP
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    -n {{ sample_app_namespace }}
+    get svc {{ sample_app_metrics_service_name }}
+    -o jsonpath='{.spec.clusterIP}'
+  register: sample_app_metrics_service_cluster_ip
+  changed_when: false
+
+- name: Verify internal metrics endpoint
+  ansible.builtin.command: >
+    curl -fsS
+    --connect-timeout 5
+    --max-time 15
+    http://{{ sample_app_metrics_service_cluster_ip.stdout }}:{{ sample_app_metrics_service_port }}{{ sample_app_metrics_path }}
+  register: sample_app_metrics_response
+  changed_when: false
+
+- name: Assert metrics endpoint response
+  ansible.builtin.assert:
+    that:
+      - sample_app_expected_metrics_text in sample_app_metrics_response.stdout
+    fail_msg: "Metrics endpoint did not contain expected metric: {{ sample_app_expected_metrics_text }}."
+    quiet: true

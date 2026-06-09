@@ -1,0 +1,104 @@
+---
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Kubernetes apt repository Release key
+  ansible.builtin.get_url:
+    url: "{{ kubernetes_apt_repository }}Release.key"
+    dest: /tmp/kubernetes-release.key
+    mode: "0644"
+
+- name: Convert Kubernetes repository key to gpg keyring
+  ansible.builtin.command:
+    cmd: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+- name: Set Kubernetes apt keyring permissions
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure Kubernetes apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] {{ kubernetes_apt_repository }} /
+
+- name: Update apt package cache after adding Kubernetes repository
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Install Kubernetes packages
+  ansible.builtin.apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+
+- name: Hold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+# kubelet should use the management/control-plane IP, not the Vagrant NAT IP.
+# This prevents Kubernetes from registering nodes with the wrong interface.
+- name: Create kubelet systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/kubelet.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure kubelet node IP and CRI socket
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/kubelet.service.d/20-extra-args.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      Environment="KUBELET_EXTRA_ARGS=--node-ip={{ mgmt_ip }} --container-runtime-endpoint={{ kubernetes_cri_socket }}"
+  notify: Restart kubelet
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# kubelet may not become active before kubeadm init/join.
+# We enable it now; kubeadm will fully configure it later.
+- name: Enable kubelet service
+  ansible.builtin.service:
+    name: kubelet
+    enabled: true
+
+- name: Check kubeadm version
+  ansible.builtin.command: kubeadm version -o short
+  register: kubeadm_version_output
+  changed_when: false
+
+- name: Check kubelet version
+  ansible.builtin.command: kubelet --version
+  register: kubelet_version_output
+  changed_when: false
+
+- name: Check kubectl client version
+  ansible.builtin.command: kubectl version --client=true
+  register: kubectl_version_output
+  changed_when: false
+

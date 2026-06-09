@@ -1,0 +1,17 @@
+---
+- name: Verify containerd is active
+  ansible.builtin.command: systemctl is-active containerd
+  register: image_pull_containerd_status
+  changed_when: false
+  failed_when: image_pull_containerd_status.stdout != "active"
+
+- name: Pull required container images
+  ansible.builtin.command: >
+    ctr -n k8s.io images pull {{ item }}
+  loop: "{{ image_pull_images | default([]) }}"
+  register: image_pull_result
+  changed_when: false
+  retries: 5
+  delay: 30
+  until: image_pull_result.rc == 0
+  when: image_pull_images | default([]) | length > 0

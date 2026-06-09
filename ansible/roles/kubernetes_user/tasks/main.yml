@@ -1,0 +1,149 @@
+---
+- name: Ensure this role runs only on the first master
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - inventory_hostname == groups['kube_masters'][0]
+    fail_msg: "The kubernetes_user role must run only on the first Kubernetes master."
+    success_msg: "Creating limited Kubernetes application viewer user."
+
+- name: Ensure app viewer work directory exists
+  ansible.builtin.file:
+    path: "{{ kubernetes_app_viewer_workdir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Generate private key for app viewer user
+  ansible.builtin.command: >
+    openssl genrsa
+    -out {{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.key
+    2048
+  args:
+    creates: "{{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.key"
+
+- name: Generate CSR for app viewer user
+  ansible.builtin.command: >
+    openssl req
+    -new
+    -key {{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.key
+    -out {{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.csr
+    -subj /CN={{ kubernetes_app_viewer_user }}/O={{ kubernetes_app_viewer_group }}
+  args:
+    creates: "{{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.csr"
+
+- name: Sign app viewer certificate with Kubernetes cluster CA
+  ansible.builtin.command: >
+    openssl x509
+    -req
+    -in {{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.csr
+    -CA /etc/kubernetes/pki/ca.crt
+    -CAkey /etc/kubernetes/pki/ca.key
+    -CAcreateserial
+    -out {{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.crt
+    -days 365
+    -sha256
+  args:
+    creates: "{{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.crt"
+
+- name: Render app viewer RBAC manifest
+  ansible.builtin.template:
+    src: app-viewer-rbac.yaml.j2
+    dest: "{{ kubernetes_app_viewer_workdir }}/app-viewer-rbac.yaml"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Apply app viewer RBAC
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    apply -f {{ kubernetes_app_viewer_workdir }}/app-viewer-rbac.yaml
+  register: app_viewer_rbac_apply
+  changed_when: >
+    'created' in app_viewer_rbac_apply.stdout or
+    'configured' in app_viewer_rbac_apply.stdout
+
+- name: Build kubeconfig for app viewer user - set cluster
+  ansible.builtin.command: >
+    kubectl config set-cluster {{ cluster_name }}
+    --server=https://{{ kubernetes_api_endpoint }}
+    --certificate-authority=/etc/kubernetes/pki/ca.crt
+    --embed-certs=true
+    --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+  changed_when: false
+
+- name: Build kubeconfig for app viewer user - set credentials
+  ansible.builtin.command: >
+    kubectl config set-credentials {{ kubernetes_app_viewer_user }}
+    --client-certificate={{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.crt
+    --client-key={{ kubernetes_app_viewer_workdir }}/{{ kubernetes_app_viewer_user }}.key
+    --embed-certs=true
+    --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+  changed_when: false
+
+- name: Build kubeconfig for app viewer user - set context
+  ansible.builtin.command: >
+    kubectl config set-context {{ kubernetes_app_viewer_user }}@{{ cluster_name }}
+    --cluster={{ cluster_name }}
+    --user={{ kubernetes_app_viewer_user }}
+    --namespace={{ kubernetes_app_viewer_namespace }}
+    --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+  changed_when: false
+
+- name: Build kubeconfig for app viewer user - use context
+  ansible.builtin.command: >
+    kubectl config use-context {{ kubernetes_app_viewer_user }}@{{ cluster_name }}
+    --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+  changed_when: false
+
+- name: Set secure permissions on app viewer kubeconfig
+  ansible.builtin.file:
+    path: "{{ kubernetes_app_viewer_kubeconfig }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+# Positive test: user can see application pods.
+- name: Verify app viewer can list pods in demo namespace
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+    get pods -n {{ kubernetes_app_viewer_namespace }}
+  register: app_viewer_can_get_pods
+  changed_when: false
+
+- name: Get one sample app pod name
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get pod -n {{ kubernetes_app_viewer_namespace }}
+    -l app.kubernetes.io/instance={{ sample_app_release_name }}
+    -o jsonpath='{.items[0].metadata.name}'
+  register: app_viewer_sample_pod
+  changed_when: false
+
+- name: Verify app viewer can read pod logs
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+    logs -n {{ kubernetes_app_viewer_namespace }}
+    {{ app_viewer_sample_pod.stdout }}
+    --tail=10
+  register: app_viewer_can_get_logs
+  changed_when: false
+
+- name: Verify app viewer cannot list nodes
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+    get nodes
+  register: app_viewer_cannot_get_nodes
+  changed_when: false
+  failed_when: app_viewer_cannot_get_nodes.rc == 0
+
+- name: Verify app viewer cannot delete pods
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubernetes_app_viewer_kubeconfig }}
+    delete pod -n {{ kubernetes_app_viewer_namespace }}
+    {{ app_viewer_sample_pod.stdout }}
+    --dry-run=server
+  register: app_viewer_cannot_delete_pods
+  changed_when: false
+  failed_when: app_viewer_cannot_delete_pods.rc == 0

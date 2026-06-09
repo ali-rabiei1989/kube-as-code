@@ -1,0 +1,53 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ sample_app_hpa_name }}
+  namespace: {{ sample_app_namespace }}
+  labels:
+    app.kubernetes.io/name: {{ sample_app_name }}
+    app.kubernetes.io/instance: {{ sample_app_release_name }}
+    app.kubernetes.io/component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ sample_app_deployment_name }}
+
+  minReplicas: {{ sample_app_hpa_min_replicas }}
+  maxReplicas: {{ sample_app_hpa_max_replicas }}
+
+  metrics:
+    - type: Object
+      object:
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: {{ sample_app_service_name }}
+        metric:
+          name: {{ sample_app_hpa_metric_name }}
+        target:
+          type: AverageValue
+          averageValue: "{{ sample_app_hpa_target_average_value }}"
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 2
+          periodSeconds: 15
+      selectPolicy: Max
+
+    scaleDown:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 15
+        - type: Pods
+          value: 2
+          periodSeconds: 15
+      selectPolicy: Max

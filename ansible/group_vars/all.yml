@@ -1,0 +1,178 @@
+---
+# ------------------------------------------------------------
+# Cluster and network
+# ------------------------------------------------------------
+cluster_name: "vagrant-ha-kubernetes"
+
+kubernetes_api_vip: "192.168.100.10"
+kubernetes_api_server_port: 6443
+kubernetes_api_lb_port: 8443
+kubernetes_api_endpoint: "{{ kubernetes_api_vip }}:{{ kubernetes_api_lb_port }}"
+
+mgmt_network_cidr: "192.168.100.0/24"
+workload_network_cidr: "192.168.200.0/24"
+pod_network_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+
+kubernetes_version: "v1.36.1"
+kubernetes_minor_version: "1.36"
+kubernetes_apt_repository: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor_version }}/deb/"
+kubernetes_cri_socket: "unix:///run/containerd/containerd.sock"
+
+# ------------------------------------------------------------
+# HAProxy / Keepalived
+# ------------------------------------------------------------
+haproxy_stats_port: 8404
+keepalived_virtual_router_id: 51
+keepalived_auth_pass: "ChangeMeForProduction"
+
+# ------------------------------------------------------------
+# Calico CNI
+# ------------------------------------------------------------
+calico_version: "v3.32.0"
+calico_operator_manifest_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
+calico_encapsulation: "VXLAN"
+calico_nat_outgoing: "Enabled"
+calico_bgp: "Disabled"
+calico_ip_autodetection_cidr: "192.168.200.0/24"
+
+# ------------------------------------------------------------
+# Sample application
+# ------------------------------------------------------------
+sample_app_name: "sample-webapp"
+sample_app_namespace: "demo"
+sample_app_release_name: "k8s-lab"
+sample_app_chart_local_path: "{{ playbook_dir }}/../charts/sample-webapp"
+sample_app_chart_remote_path: "/opt/kubernetes/charts/sample-webapp"
+sample_app_values_file: "{{ sample_app_chart_remote_path }}/values.yaml"
+sample_app_service_name: "{{ sample_app_release_name }}-{{ sample_app_name }}"
+sample_app_deployment_name: "{{ sample_app_release_name }}-{{ sample_app_name }}"
+sample_app_expected_service_type: "LoadBalancer"
+
+sample_app_images:
+  - "docker.io/library/nginx:1.27.0"
+  - "docker.io/nginx/nginx-prometheus-exporter:1.5.1"
+
+sample_app_http_path: "/"
+sample_app_health_path: "/healthz"
+sample_app_readiness_path: "/readyz"
+sample_app_metrics_path: "/metrics"
+sample_app_expected_http_status: 200
+sample_app_expected_response_text: "Hello"
+sample_app_expected_health_text: "ok"
+sample_app_expected_readiness_text: "ready"
+sample_app_expected_metrics_text: "nginx_http_requests_total"
+sample_app_metrics_service_name: "{{ sample_app_service_name }}-metrics"
+sample_app_metrics_service_port: 9113
+
+# ------------------------------------------------------------
+# MetalLB
+# ------------------------------------------------------------
+metallb_namespace: "metallb-system"
+metallb_helm_repo_name: "metallb"
+metallb_helm_repo_url: "https://metallb.github.io/metallb"
+metallb_chart_version: "0.16.1"
+metallb_release_name: "metallb"
+metallb_image_tag: "v0.16.1"
+metallb_images:
+  - "quay.io/metallb/controller:{{ metallb_image_tag }}"
+  - "quay.io/metallb/speaker:{{ metallb_image_tag }}"
+metallb_ip_pool_name: "vagrant-workload-l2-pool"
+metallb_ip_address_range: "192.168.200.240-192.168.200.250"
+metallb_l2_advertisement_name: "vagrant-workload-l2-advertisement"
+
+# ------------------------------------------------------------
+# Limited Kubernetes application viewer user
+# ------------------------------------------------------------
+kubernetes_app_viewer_user: "app-viewer"
+kubernetes_app_viewer_group: "app-viewers"
+kubernetes_app_viewer_namespace: "demo"
+kubernetes_app_viewer_workdir: "/opt/kubernetes/users/app-viewer"
+kubernetes_app_viewer_kubeconfig: "{{ kubernetes_app_viewer_workdir }}/app-viewer.kubeconfig"
+kubernetes_app_viewer_role_name: "app-viewer"
+kubernetes_app_viewer_rolebinding_name: "app-viewer-binding"
+
+# ------------------------------------------------------------
+# Metrics Server
+# ------------------------------------------------------------
+metrics_server_namespace: "kube-system"
+metrics_server_helm_repo_name: "metrics-server"
+metrics_server_helm_repo_url: "https://kubernetes-sigs.github.io/metrics-server/"
+metrics_server_release_name: "metrics-server"
+metrics_server_chart_name: "metrics-server/metrics-server"
+metrics_server_chart_version: "3.13.0"
+metrics_server_chart_cache_dir: "/opt/kubernetes/helm-charts/metrics-server"
+metrics_server_chart_package: "{{ metrics_server_chart_cache_dir }}/metrics-server-{{ metrics_server_chart_version }}.tgz"
+metrics_server_image_repository: "registry.k8s.io/metrics-server/metrics-server"
+metrics_server_image_tag: "v0.8.0"
+metrics_server_image: "{{ metrics_server_image_repository }}:{{ metrics_server_image_tag }}"
+metrics_server_kubelet_insecure_tls: true
+metrics_server_replicas: 1
+
+# ------------------------------------------------------------
+# Prometheus
+# ------------------------------------------------------------
+prometheus_namespace: "monitoring"
+prometheus_helm_repo_name: "prometheus-community"
+prometheus_helm_repo_url: "https://prometheus-community.github.io/helm-charts"
+prometheus_release_name: "prometheus"
+prometheus_chart_name: "prometheus-community/prometheus"
+prometheus_chart_version: "29.10.0"
+prometheus_chart_cache_dir: "/opt/kubernetes/helm-charts/prometheus"
+prometheus_chart_package: "{{ prometheus_chart_cache_dir }}/prometheus-{{ prometheus_chart_version }}.tgz"
+prometheus_server_image_repository: "quay.io/prometheus/prometheus"
+prometheus_server_image_tag: "v3.12.0"
+prometheus_server_image: "{{ prometheus_server_image_repository }}:{{ prometheus_server_image_tag }}"
+prometheus_configmap_reload_image_repository: "quay.io/prometheus-operator/prometheus-config-reloader"
+prometheus_configmap_reload_image_tag: "v0.86.2"
+prometheus_configmap_reload_image: "{{ prometheus_configmap_reload_image_repository }}:{{ prometheus_configmap_reload_image_tag }}"
+prometheus_images:
+  - "{{ prometheus_server_image }}"
+  - "{{ prometheus_configmap_reload_image }}"
+prometheus_sample_app_job_name: "sample-webapp"
+prometheus_sample_app_target: "{{ sample_app_metrics_service_name }}.{{ sample_app_namespace }}.svc.cluster.local:9113"
+prometheus_sample_app_metrics_path: "/metrics"
+prometheus_sample_app_metric_name: "nginx_http_requests_total"
+
+# ------------------------------------------------------------
+# Prometheus Adapter
+# ------------------------------------------------------------
+prometheus_adapter_namespace: "monitoring"
+prometheus_adapter_helm_repo_name: "prometheus-community"
+prometheus_adapter_helm_repo_url: "https://prometheus-community.github.io/helm-charts"
+prometheus_adapter_release_name: "prometheus-adapter"
+prometheus_adapter_chart_name: "prometheus-community/prometheus-adapter"
+prometheus_adapter_chart_version: "5.3.0"
+prometheus_adapter_chart_cache_dir: "/opt/kubernetes/helm-charts/prometheus-adapter"
+prometheus_adapter_chart_package: "{{ prometheus_adapter_chart_cache_dir }}/prometheus-adapter-{{ prometheus_adapter_chart_version }}.tgz"
+prometheus_adapter_image_repository: "registry.k8s.io/prometheus-adapter/prometheus-adapter"
+prometheus_adapter_image_tag: "v0.12.0"
+prometheus_adapter_image: "{{ prometheus_adapter_image_repository }}:{{ prometheus_adapter_image_tag }}"
+prometheus_adapter_prometheus_url: "http://prometheus-server.monitoring.svc.cluster.local"
+prometheus_adapter_prometheus_port: 80
+prometheus_adapter_nginx_metric_name: "nginx_http_requests_per_second"
+
+# ------------------------------------------------------------
+# Sample application HPA
+# ------------------------------------------------------------
+
+sample_app_hpa_name: "sample-webapp-hpa"
+
+sample_app_hpa_min_replicas: 3
+sample_app_hpa_max_replicas: 8
+
+# Custom metric exposed by Prometheus Adapter.
+sample_app_hpa_metric_name: "nginx_http_requests_per_second"
+
+sample_app_hpa_scaleup_stabilization_seconds: 0
+sample_app_hpa_scaledown_stabilization_seconds: 60
+
+sample_app_hpa_scaleup_percent_value: 100
+sample_app_hpa_scaleup_pods_value: 2
+sample_app_hpa_scaleup_period_seconds: 15
+
+sample_app_hpa_scaledown_percent_value: 50
+sample_app_hpa_scaledown_pods_value: 2
+sample_app_hpa_scaledown_period_seconds: 15
+
+sample_app_hpa_target_average_value: "500m"

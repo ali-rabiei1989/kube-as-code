@@ -1,0 +1,102 @@
+---
+- name: Ensure this role runs only on the first master
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == groups['kube_masters'][0]
+    fail_msg: "The hpa role must run only on the first Kubernetes master."
+    success_msg: "Configuring HPA from the first Kubernetes master."
+
+- name: Ensure Kubernetes API is reachable
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get nodes
+  register: hpa_kubectl_get_nodes
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: hpa_kubectl_get_nodes.rc == 0
+
+- name: Ensure custom metrics API is available
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get apiservice v1beta1.custom.metrics.k8s.io
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+  register: hpa_custom_metrics_api_available
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: hpa_custom_metrics_api_available.stdout == "True"
+
+- name: Verify custom metric exists for sample application Service
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get --raw /apis/custom.metrics.k8s.io/v1beta1/namespaces/{{ sample_app_namespace }}/services/{{ sample_app_service_name }}/{{ sample_app_hpa_metric_name }}
+  register: hpa_custom_metric_check
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - hpa_custom_metric_check.rc == 0
+    - '"MetricValueList" in hpa_custom_metric_check.stdout'
+    - '"items" in hpa_custom_metric_check.stdout'
+
+- name: Ensure HPA manifest directory exists
+  ansible.builtin.file:
+    path: /opt/kubernetes/manifests/hpa
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render sample application HPA manifest
+  ansible.builtin.template:
+    src: sample-webapp-hpa.yaml.j2
+    dest: /opt/kubernetes/manifests/hpa/sample-webapp-hpa.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply sample application HPA
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    apply -f /opt/kubernetes/manifests/hpa/sample-webapp-hpa.yaml
+  register: hpa_apply
+  changed_when: "'created' in hpa_apply.stdout or 'configured' in hpa_apply.stdout"
+
+- name: Wait until HPA object exists
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get hpa {{ sample_app_hpa_name }} -n {{ sample_app_namespace }}
+  register: hpa_get
+  changed_when: false
+  retries: 20
+  delay: 5
+  until: hpa_get.rc == 0
+
+- name: Wait until HPA reads the custom metric
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get hpa {{ sample_app_hpa_name }} -n {{ sample_app_namespace }}
+    -o jsonpath='{.status.currentMetrics[0].object.current.averageValue}'
+  register: hpa_current_metric
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - hpa_current_metric.rc == 0
+    - hpa_current_metric.stdout | length > 0
+
+- name: Show HPA current custom metric value
+  ansible.builtin.debug:
+    msg: "Current {{ sample_app_hpa_metric_name }} average value is {{ hpa_current_metric.stdout }}"
+    
+- name: Show HPA summary
+  ansible.builtin.command: >
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf
+    get hpa {{ sample_app_hpa_name }} -n {{ sample_app_namespace }}
+  register: hpa_summary
+  changed_when: false
+
+- name: Print HPA summary
+  ansible.builtin.debug:
+    var: hpa_summary.stdout_lines

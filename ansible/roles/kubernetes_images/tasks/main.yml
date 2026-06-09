@@ -1,0 +1,16 @@
+---
+- name: List required Kubernetes images
+  ansible.builtin.command: >
+    kubeadm config images list
+    --kubernetes-version {{ kubernetes_version }}
+  register: kubeadm_required_images
+  changed_when: false
+
+- name: Pre-pull Kubernetes images using containerd CRI socket
+  ansible.builtin.command: >
+    kubeadm config images pull
+    --kubernetes-version {{ kubernetes_version }}
+    --cri-socket {{ kubernetes_cri_socket }}
+  register: kubeadm_image_pull_result
+  changed_when: "'Pulled' in kubeadm_image_pull_result.stdout"
+

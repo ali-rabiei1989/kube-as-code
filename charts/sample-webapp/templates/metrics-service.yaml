@@ -1,0 +1,17 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sample-webapp.fullname" . }}-metrics
+  labels:
+    {{- include "sample-webapp.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.metrics.service.type }}
+  selector:
+    {{- include "sample-webapp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.service.port }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

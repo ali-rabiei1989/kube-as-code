@@ -1,0 +1,20 @@
+replicas: {{ metrics_server_replicas }}
+
+image:
+  repository: {{ metrics_server_image_repository }}
+  tag: {{ metrics_server_image_tag }}
+  pullPolicy: IfNotPresent
+
+args:
+  - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+{% if metrics_server_kubelet_insecure_tls | bool %}
+  - --kubelet-insecure-tls
+{% endif %}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

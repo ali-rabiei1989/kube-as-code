@@ -1,0 +1,18 @@
+---
+- name: Check if worker node has already joined the cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Generate worker join command on first master
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: worker_join_command_result
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['kube_masters'][0] }}"
+
+- name: Join worker node to Kubernetes cluster
+  ansible.builtin.command: >
+    {{ worker_join_command_result.stdout }}
+    --cri-socket {{ kubernetes_cri_socket }}
+  when: not kubelet_conf.stat.exists
