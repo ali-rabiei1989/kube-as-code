@@ -88,7 +88,7 @@ Service network:    10.96.0.0/12
 Kubernetes API VIP:
 
 ```text
-192.168.100.10:6443
+192.168.100.10:8443
 ```
 
 Application LoadBalancer IP:
