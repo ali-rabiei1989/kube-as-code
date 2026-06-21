@@ -1,5 +1,7 @@
 # Kubernetes as Code: Automated HA Kubernetes Lab with Ansible and Vagrant
 
+A practical cloud-native infrastructure lab for automating a highly available Kubernetes cluster with networking, observability, RBAC, and custom-metrics autoscaling.
+
 This repository builds a local Kubernetes lab using Vagrant and Ansible.
 
 It demonstrates:
