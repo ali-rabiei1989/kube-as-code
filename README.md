@@ -1,4 +1,4 @@
-# Kubernetes HA Lab with Ansible, Vagrant, Helm, MetalLB, Prometheus, and Custom-Metrics HPA
+# Kubernetes as Code: Automated HA Kubernetes Lab with Ansible and Vagrant
 
 This repository builds a local Kubernetes lab using Vagrant and Ansible.
 
