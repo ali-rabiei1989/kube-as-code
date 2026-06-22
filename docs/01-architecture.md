@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/architecture-overview.png" alt="Kube as Code - Automated HA Kubernetes Lab" width="100%">
+</p>
+
 # Architecture
 
 > This document describes the Vagrant-based Kubernetes HA lab architecture and the current implementation choices.
@@ -530,4 +534,3 @@ Known lab limitations:
 - `metrics_server_kubelet_insecure_tls` is enabled for lab compatibility and should not be used as-is in production.
 
 These limitations should be documented clearly when presenting the project.
-

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/custom-metrics-autoscaling.png" alt="Kube as Code - Automated HA Kubernetes Lab" width="100%">
+</p>
+
 # 07 - HPA with Custom Metrics
 
 This document explains how Horizontal Pod Autoscaling is implemented using custom metrics in this Kubernetes lab.

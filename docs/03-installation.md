@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/cluster-topology.png" alt="Kube as Code - Automated HA Kubernetes Lab" width="100%">
+</p>
+
 # 03 - Installation Guide
 
 This document explains how to deploy the Vagrant-based Kubernetes lab from a clean state. It covers VM provisioning, Ansible execution, and the first verification steps after installation.

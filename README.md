@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/cover.png" alt="Kube as Code - Automated HA Kubernetes Lab" width="100%">
+</p>
+
 # Kubernetes as Code: Automated HA Kubernetes Lab with Ansible and Vagrant
 
 A practical cloud-native infrastructure lab for automating a highly available Kubernetes cluster with networking, observability, RBAC, and custom-metrics autoscaling.
